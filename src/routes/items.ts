@@ -11,6 +11,7 @@ const ItemSchema = z.object({
   category_id: z.number().int().nullable().optional(),
   diamond_price: z.number().positive().nullable().optional(),
   notes: z.string().max(500).nullable().optional(),
+  stack_size: z.number().int().min(1).max(64).optional(),
 });
 
 const CategorySchema = z.object({
@@ -24,6 +25,7 @@ interface ItemRow {
   category_id: number | null;
   diamond_price: number | null;
   notes: string | null;
+  stack_size: number;
 }
 
 interface CategoryRow {
@@ -60,8 +62,8 @@ router.post("/", requireStaff, (req, res) => {
   }
   const d = parsed.data;
   const result = db
-    .prepare("INSERT INTO items (name, category_id, diamond_price, notes) VALUES (?, ?, ?, ?)")
-    .run(d.name, d.category_id ?? null, d.diamond_price ?? null, d.notes ?? null);
+    .prepare("INSERT INTO items (name, category_id, diamond_price, notes, stack_size) VALUES (?, ?, ?, ?, ?)")
+    .run(d.name, d.category_id ?? null, d.diamond_price ?? null, d.notes ?? null, d.stack_size ?? 64);
   const item = db.prepare("SELECT * FROM items WHERE id = ?").get(result.lastInsertRowid) as ItemRow;
   logAudit({
     adminId: req.admin!.adminId,
@@ -70,7 +72,7 @@ router.post("/", requireStaff, (req, res) => {
     targetType: "item",
     targetId: item.id,
     targetName: item.name,
-    details: { diamond_price: item.diamond_price, category_id: item.category_id },
+    details: { diamond_price: item.diamond_price, category_id: item.category_id, stack_size: item.stack_size },
   });
   res.status(201).json(item);
 });
@@ -95,13 +97,13 @@ router.put("/:id", requireStaff, (req, res) => {
 
   const d = parsed.data;
   db.prepare(
-    "UPDATE items SET name=?, category_id=?, diamond_price=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
-  ).run(d.name, d.category_id ?? null, d.diamond_price ?? null, d.notes ?? null, id);
+    "UPDATE items SET name=?, category_id=?, diamond_price=?, notes=?, stack_size=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).run(d.name, d.category_id ?? null, d.diamond_price ?? null, d.notes ?? null, d.stack_size ?? before.stack_size, id);
   const item = db.prepare("SELECT * FROM items WHERE id = ?").get(id) as ItemRow;
 
   // Build a diff of changed fields only
   const changes: Record<string, { from: unknown; to: unknown }> = {};
-  for (const field of ["name", "diamond_price", "category_id", "notes"] as const) {
+  for (const field of ["name", "diamond_price", "category_id", "notes", "stack_size"] as const) {
     const from = before[field], to = item[field];
     if (from !== to) changes[field] = { from, to };
   }
@@ -231,11 +233,11 @@ router.post("/bulk", requireStaff, (req, res) => {
     return;
   }
   const insert = db.prepare(
-    "INSERT INTO items (name, category_id, diamond_price, notes) VALUES (?, ?, ?, ?)"
+    "INSERT INTO items (name, category_id, diamond_price, notes, stack_size) VALUES (?, ?, ?, ?, ?)"
   );
   const insertMany = db.transaction((items: typeof rows.data) => {
     for (const d of items) {
-      insert.run(d.name, d.category_id ?? null, d.diamond_price ?? null, d.notes ?? null);
+      insert.run(d.name, d.category_id ?? null, d.diamond_price ?? null, d.notes ?? null, d.stack_size ?? 64);
     }
   });
   insertMany(rows.data);

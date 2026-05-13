@@ -73,6 +73,11 @@ for (const old of ["units_per_diamond", "shulker_price", "diamond_block_price"])
   if (itemCols.includes(old)) db.exec(`ALTER TABLE items DROP COLUMN ${old}`);
 }
 
+// Add stack_size to items if missing
+if (!itemCols.includes("stack_size")) {
+  db.exec("ALTER TABLE items ADD COLUMN stack_size INTEGER NOT NULL DEFAULT 64");
+}
+
 // Add suggested_category_id to submissions if missing
 const subCols = (db.prepare("PRAGMA table_info(submissions)").all() as { name: string }[]).map(
   (c) => c.name
@@ -107,7 +112,7 @@ if (adminCount === 0) {
     // Plain-text fallback (dev only)
     const autoHash = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 10);
     db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'owner')").run(username, autoHash);
-    console.log(`[db] Seeded initial admin "${username}" (plain-text password — set ADMIN_PASSWORD_HASH in production).`);
+    console.log(`[db] Seeded initial admin "${username}" (plain-text password - set ADMIN_PASSWORD_HASH in production).`);
   } else {
     console.warn("[db] WARNING: No admins in DB and no ADMIN_USERNAME/ADMIN_PASSWORD_HASH env vars set. Set them to create the first admin.");
   }
