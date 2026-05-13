@@ -46,8 +46,21 @@ db.exec(`
     created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id       INTEGER,
+    admin_username TEXT NOT NULL,
+    action         TEXT NOT NULL,
+    target_type    TEXT NOT NULL,
+    target_id      INTEGER,
+    target_name    TEXT,
+    details        TEXT,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE INDEX IF NOT EXISTS idx_items_category ON items(category_id);
   CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);
+  CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 `);
 
 // ── Migrations ────────────────────────────────────────────────────────────────
@@ -70,18 +83,30 @@ if (!subCols.includes("suggested_category_id")) {
   );
 }
 
+// Add role column to admins if missing
+const adminCols = (db.prepare("PRAGMA table_info(admins)").all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!adminCols.includes("role")) {
+  db.exec("ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'staff'");
+  // Promote the earliest admin to owner if no owner exists
+  db.exec(
+    "UPDATE admins SET role = 'owner' WHERE id = (SELECT MIN(id) FROM admins)"
+  );
+}
+
 // ── Seed initial admin from env vars if the table is empty ───────────────────
 const adminCount = (db.prepare("SELECT COUNT(*) as n FROM admins").get() as { n: number }).n;
 if (adminCount === 0) {
   const username = process.env.ADMIN_USERNAME;
   const hash = process.env.ADMIN_PASSWORD_HASH;
   if (username && hash) {
-    db.prepare("INSERT INTO admins (username, password_hash) VALUES (?, ?)").run(username, hash);
+    db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'owner')").run(username, hash);
     console.log(`[db] Seeded initial admin "${username}" from env vars.`);
   } else if (username && process.env.ADMIN_PASSWORD) {
     // Plain-text fallback (dev only)
     const autoHash = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 10);
-    db.prepare("INSERT INTO admins (username, password_hash) VALUES (?, ?)").run(username, autoHash);
+    db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'owner')").run(username, autoHash);
     console.log(`[db] Seeded initial admin "${username}" (plain-text password — set ADMIN_PASSWORD_HASH in production).`);
   } else {
     console.warn("[db] WARNING: No admins in DB and no ADMIN_USERNAME/ADMIN_PASSWORD_HASH env vars set. Set them to create the first admin.");

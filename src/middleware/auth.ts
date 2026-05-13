@@ -1,8 +1,12 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
+export type Role = "owner" | "staff" | "helper";
+
+const ROLE_RANK: Record<Role, number> = { helper: 0, staff: 1, owner: 2 };
+
 export interface AdminPayload {
-  role: "admin";
+  role: Role;
   adminId: number;
   username: string;
 }
@@ -16,21 +20,32 @@ declare global {
   }
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const token =
-    req.cookies?.admin_token ?? req.headers.authorization?.replace("Bearer ", "");
+export function requireRole(minRole: Role) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const token =
+      req.cookies?.admin_token ?? req.headers.authorization?.replace("Bearer ", "");
 
-  if (!token) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+    if (!token) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
 
-  try {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) throw new Error("JWT_SECRET not configured");
-    req.admin = jwt.verify(token, secret) as AdminPayload;
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid or expired token" });
-  }
+    try {
+      const secret = process.env.JWT_SECRET;
+      if (!secret) throw new Error("JWT_SECRET not configured");
+      req.admin = jwt.verify(token, secret) as AdminPayload;
+      if (ROLE_RANK[req.admin.role] < ROLE_RANK[minRole]) {
+        res.status(403).json({ error: "Insufficient permissions" });
+        return;
+      }
+      next();
+    } catch {
+      res.status(401).json({ error: "Invalid or expired token" });
+    }
+  };
 }
+
+// Convenience aliases
+export const requireAdmin = requireRole("helper");
+export const requireStaff = requireRole("staff");
+export const requireOwner = requireRole("owner");

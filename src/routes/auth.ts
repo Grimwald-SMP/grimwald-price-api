@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import db from "../db";
+import type { Role } from "../middleware/auth";
 
 const router = Router();
 
@@ -15,6 +16,7 @@ interface AdminRow {
   id: number;
   username: string;
   password_hash: string;
+  role: Role;
 }
 
 router.post("/login", async (req, res) => {
@@ -27,12 +29,12 @@ router.post("/login", async (req, res) => {
   const { username, password } = parsed.data;
   const secret = process.env.JWT_SECRET;
   if (!secret) {
-    res.status(500).json({ error: "JWT_SECRET not configured" });
+    res.status(500).json({ error: "Server misconfiguration" });
     return;
   }
 
   const admin = db
-    .prepare("SELECT id, username, password_hash FROM admins WHERE username = ?")
+    .prepare("SELECT id, username, password_hash, role FROM admins WHERE username = ?")
     .get(username) as AdminRow | undefined;
 
   if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
@@ -41,7 +43,7 @@ router.post("/login", async (req, res) => {
   }
 
   const token = jwt.sign(
-    { role: "admin", adminId: admin.id, username: admin.username },
+    { role: admin.role, adminId: admin.id, username: admin.username },
     secret,
     { expiresIn: "7d" }
   );
@@ -53,12 +55,32 @@ router.post("/login", async (req, res) => {
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
-  res.json({ ok: true, username: admin.username });
+  res.json({ ok: true, username: admin.username, role: admin.role });
 });
 
 router.post("/logout", (_req, res) => {
   res.clearCookie("admin_token");
   res.json({ ok: true });
+});
+
+router.get("/me", (req, res) => {
+  const token =
+    req.cookies?.admin_token ?? req.headers.authorization?.replace("Bearer ", "");
+  if (!token) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    res.status(500).json({ error: "Server misconfiguration" });
+    return;
+  }
+  try {
+    const payload = jwt.verify(token, secret) as { username: string; role: Role };
+    res.json({ username: payload.username, role: payload.role });
+  } catch {
+    res.status(401).json({ error: "Invalid or expired token" });
+  }
 });
 
 export default router;

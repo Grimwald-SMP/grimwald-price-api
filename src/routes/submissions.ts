@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import db from "../db";
 import { requireAdmin } from "../middleware/auth";
+import { logAudit } from "../lib/audit";
 
 const router = Router();
 
@@ -58,9 +59,16 @@ router.get("/", requireAdmin, (req, res) => {
   res.json(submissions);
 });
 
+function parseId(raw: string | string[]): number | null {
+  const s = Array.isArray(raw) ? raw[0] : raw;
+  const n = parseInt(s, 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 // Admin: approve or reject a submission
 router.put("/:id", requireAdmin, (req, res) => {
-  const id = Number(req.params.id);
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid id" }); return; }
   const parsed = ReviewSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
@@ -115,6 +123,19 @@ router.put("/:id", requireAdmin, (req, res) => {
       }
     }
   })();
+
+  logAudit({
+    adminId: req.admin!.adminId,
+    adminUsername: req.admin!.username,
+    action: status === "approved" ? "submission.approve" : "submission.reject",
+    targetType: "submission",
+    targetId: id,
+    targetName: sub.item_name,
+    details: {
+      suggested_price: sub.suggested_price,
+      admin_notes: admin_notes ?? null,
+    },
+  });
 
   res.json(
     db
