@@ -1,0 +1,1153 @@
+openapi: 3.1.0
+info:
+  title: Grimwald Price API
+  description: |
+    A price database API for managing item prices on the Grimwald SMP Minecraft server.
+    Players can submit price suggestions; staff and helpers review and approve them.
+
+    ## Authentication
+
+    Most write operations require authentication. Authenticate by calling `POST /api/auth/login`,
+    which sets an `admin_token` cookie. Alternatively, pass the token in the
+    `Authorization: Bearer <token>` header.
+
+    ## Roles
+
+    | Role    | Level | Capabilities |
+    |---------|-------|--------------|
+    | helper  | 0     | View and review price submissions |
+    | staff   | 1     | All helper permissions + manage items/categories + view audit log |
+    | owner   | 2     | All staff permissions + manage admin accounts |
+  version: 1.0.0
+  contact:
+    name: Grimwald SMP
+
+servers:
+  - url: /api
+    description: API base path
+
+tags:
+  - name: auth
+    description: Authentication and session management
+  - name: items
+    description: Items and categories (the price database)
+  - name: submissions
+    description: Community price submissions and review workflow
+  - name: admins
+    description: Admin account management (owner only)
+  - name: audit
+    description: Audit log of admin actions
+  - name: health
+    description: Service health
+
+# ---------------------------------------------------------------------------
+# Security schemes
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: admin_token
+      description: JWT issued by `POST /api/auth/login`. HttpOnly, Secure, SameSite=Strict.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Same JWT passed in the `Authorization` header instead of a cookie.
+
+  # ---------------------------------------------------------------------------
+  # Reusable schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+
+    Role:
+      type: string
+      enum: [owner, staff, helper]
+      description: Admin role. `owner` > `staff` > `helper`.
+
+    SubmissionStatus:
+      type: string
+      enum: [pending, approved, rejected]
+
+    Category:
+      type: object
+      required: [id, name, color]
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Building Blocks
+        color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+          example: '#3b82f6'
+
+    Item:
+      type: object
+      required: [id, name, stack_size, updated_at]
+      properties:
+        id:
+          type: integer
+          example: 42
+        name:
+          type: string
+          example: Diamond
+        category_id:
+          type: integer
+          nullable: true
+          example: 3
+        diamond_price:
+          type: number
+          format: float
+          nullable: true
+          description: Price expressed in diamonds.
+          example: 1.5
+        notes:
+          type: string
+          nullable: true
+          example: Prices vary by enchantment.
+        stack_size:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 64
+          example: 64
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-05-13T12:00:00.000Z'
+        category_name:
+          type: string
+          nullable: true
+          example: Gems
+        category_color:
+          type: string
+          nullable: true
+          pattern: '^#[0-9a-fA-F]{6}$'
+          example: '#a855f7'
+
+    ItemInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Diamond
+        category_id:
+          type: integer
+          nullable: true
+          example: 3
+        diamond_price:
+          type: number
+          format: float
+          minimum: 0
+          exclusiveMinimum: true
+          nullable: true
+          example: 1.5
+        notes:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Prices vary by enchantment.
+        stack_size:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 64
+          example: 64
+
+    CategoryInput:
+      type: object
+      required: [name, color]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Building Blocks
+        color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+          example: '#3b82f6'
+
+    Submission:
+      type: object
+      required: [id, item_name, submitter_username, status, created_at]
+      properties:
+        id:
+          type: integer
+          example: 7
+        item_id:
+          type: integer
+          nullable: true
+          example: 42
+        item_name:
+          type: string
+          example: Diamond
+        suggested_price:
+          type: number
+          format: float
+          nullable: true
+          example: 2.0
+        suggested_category_id:
+          type: integer
+          nullable: true
+          example: 3
+        reasoning:
+          type: string
+          nullable: true
+          example: Checked three shop chests and averaged the prices.
+        submitter_username:
+          type: string
+          example: Steve
+        status:
+          $ref: '#/components/schemas/SubmissionStatus'
+        admin_notes:
+          type: string
+          nullable: true
+          example: Approved after cross-referencing the market.
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-05-13T09:00:00.000Z'
+        suggested_category_name:
+          type: string
+          nullable: true
+          example: Gems
+        suggested_category_color:
+          type: string
+          nullable: true
+          pattern: '^#[0-9a-fA-F]{6}$'
+          example: '#a855f7'
+
+    Admin:
+      type: object
+      required: [id, username, role, created_at]
+      properties:
+        id:
+          type: integer
+          example: 1
+        username:
+          type: string
+          example: notch
+        role:
+          $ref: '#/components/schemas/Role'
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-01-01T00:00:00.000Z'
+
+    AuditEntry:
+      type: object
+      required: [id, admin_username, action, target_type, created_at]
+      properties:
+        id:
+          type: integer
+          example: 100
+        admin_id:
+          type: integer
+          nullable: true
+          example: 1
+        admin_username:
+          type: string
+          example: notch
+        action:
+          type: string
+          example: item.update
+          description: |
+            One of: `item.create`, `item.update`, `item.delete`, `item.bulk_import`,
+            `category.create`, `category.update`, `category.delete`,
+            `submission.approve`, `submission.reject`,
+            `admin.create`, `admin.delete`, `admin.role_change`, `admin.password_change`
+        target_type:
+          type: string
+          example: item
+        target_id:
+          type: integer
+          nullable: true
+          example: 42
+        target_name:
+          type: string
+          nullable: true
+          example: Diamond
+        details:
+          type: object
+          nullable: true
+          description: Action-specific metadata (field diffs, counts, flags, etc.).
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-05-13T12:05:00.000Z'
+
+    # ---------------------------------------------------------------------------
+    # Common error/success shapes
+    # ---------------------------------------------------------------------------
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Item not found
+
+  # ---------------------------------------------------------------------------
+  # Reusable responses
+  # ---------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missing:
+              value: { error: Unauthorized }
+            invalid:
+              value: { error: Invalid or expired token }
+
+    Forbidden:
+      description: Authenticated user does not have sufficient role permissions.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            value: { error: Forbidden }
+
+    NotFound:
+      description: Requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    BadRequest:
+      description: Validation error or malformed request body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Reusable parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    itemId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Item ID
+    categoryId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Category ID
+    submissionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Submission ID
+    adminId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Admin ID
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ---------- Health ---------------------------------------------------------
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+
+  # ---------- Auth -----------------------------------------------------------
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in
+      description: |
+        Validates credentials and returns a JWT in the `admin_token` cookie
+        (7-day expiry). Rate-limited to 10 attempts per 5 minutes per IP.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: notch
+                password:
+                  type: string
+                  format: password
+                  example: supersecret
+      responses:
+        '201':
+          description: Login successful. `admin_token` cookie is set.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: admin_token=<jwt>; Path=/; HttpOnly; Secure; SameSite=Strict
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, username, role]
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  username:
+                    type: string
+                    example: notch
+                  role:
+                    $ref: '#/components/schemas/Role'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Invalid credentials
+        '429':
+          description: Too many login attempts.
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Log out
+      description: Clears the `admin_token` cookie.
+      operationId: logout
+      responses:
+        '200':
+          description: Logged out successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Get current session
+      description: Returns the identity of the currently authenticated admin.
+      operationId: getMe
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Authenticated session info.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [username, role]
+                properties:
+                  username:
+                    type: string
+                    example: notch
+                  role:
+                    $ref: '#/components/schemas/Role'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---------- Items ----------------------------------------------------------
+  /items:
+    get:
+      tags: [items]
+      summary: List all items
+      description: |
+        Returns all items with their category info joined. Public endpoint,
+        rate-limited to 120 requests per minute per IP.
+      operationId: listItems
+      responses:
+        '200':
+          description: Array of items.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Item'
+        '429':
+          description: Rate limit exceeded.
+
+    post:
+      tags: [items]
+      summary: Create an item
+      description: Requires **staff** role or higher.
+      operationId: createItem
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemInput'
+      responses:
+        '201':
+          description: Item created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /items/{id}:
+    put:
+      tags: [items]
+      summary: Update an item
+      description: Requires **staff** role or higher.
+      operationId: updateItem
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/itemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemInput'
+      responses:
+        '200':
+          description: Item updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [items]
+      summary: Delete an item
+      description: Requires **staff** role or higher.
+      operationId: deleteItem
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/itemId'
+      responses:
+        '200':
+          description: Item deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /items/bulk:
+    post:
+      tags: [items]
+      summary: Bulk import items
+      description: Insert multiple items in one request. Requires **staff** role or higher.
+      operationId: bulkImportItems
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/ItemInput'
+              minItems: 1
+      responses:
+        '200':
+          description: Items inserted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inserted]
+                properties:
+                  inserted:
+                    type: integer
+                    description: Number of items successfully inserted.
+                    example: 12
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /items/categories:
+    get:
+      tags: [items]
+      summary: List all categories
+      description: Public endpoint, rate-limited to 120 requests per minute per IP.
+      operationId: listCategories
+      responses:
+        '200':
+          description: Array of categories.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Category'
+        '429':
+          description: Rate limit exceeded.
+
+    post:
+      tags: [items]
+      summary: Create a category
+      description: Requires **staff** role or higher.
+      operationId: createCategory
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryInput'
+      responses:
+        '201':
+          description: Category created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /items/categories/{id}:
+    put:
+      tags: [items]
+      summary: Update a category
+      description: Requires **staff** role or higher.
+      operationId: updateCategory
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/categoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryInput'
+      responses:
+        '200':
+          description: Category updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [items]
+      summary: Delete a category
+      description: |
+        Requires **staff** role or higher. Items in this category will have
+        `category_id` set to null (ON DELETE SET NULL).
+      operationId: deleteCategory
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/categoryId'
+      responses:
+        '200':
+          description: Category deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------- Submissions ----------------------------------------------------
+  /submissions:
+    post:
+      tags: [submissions]
+      summary: Submit a price suggestion
+      description: Public endpoint — no authentication required.
+      operationId: createSubmission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item_name, submitter_username]
+              properties:
+                item_id:
+                  type: integer
+                  nullable: true
+                  description: ID of the existing item this suggestion is for. Leave null for a new item suggestion.
+                  example: 42
+                item_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  example: Diamond
+                suggested_price:
+                  type: number
+                  format: float
+                  minimum: 0
+                  exclusiveMinimum: true
+                  nullable: true
+                  example: 2.0
+                suggested_category_id:
+                  type: integer
+                  nullable: true
+                  example: 3
+                reasoning:
+                  type: string
+                  maxLength: 1000
+                  nullable: true
+                  example: Checked three shop chests and averaged the prices.
+                submitter_username:
+                  type: string
+                  minLength: 1
+                  maxLength: 50
+                  example: Steve
+      responses:
+        '201':
+          description: Submission received.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: integer
+                    example: 7
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+    get:
+      tags: [submissions]
+      summary: List submissions
+      description: Requires **helper** role or higher.
+      operationId: listSubmissions
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SubmissionStatus'
+          description: Filter by status. Omit to return all submissions.
+      responses:
+        '200':
+          description: Array of submissions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Submission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /submissions/{id}:
+    put:
+      tags: [submissions]
+      summary: Review a submission
+      description: |
+        Approve or reject a submission. Requires **helper** role or higher.
+
+        **On approval:**
+        - If `item_id` is set, the referenced item's `diamond_price` and `category_id`
+          are updated to the suggested values (where provided).
+        - If `item_id` is null, a new item is created from the submission data.
+      operationId: reviewSubmission
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/submissionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [approved, rejected]
+                admin_notes:
+                  type: string
+                  maxLength: 500
+                  nullable: true
+                  example: Price matches current market rates.
+      responses:
+        '200':
+          description: Submission updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Submission'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------- Admins ---------------------------------------------------------
+  /admins:
+    get:
+      tags: [admins]
+      summary: List admin accounts
+      description: Requires **staff** role or higher.
+      operationId: listAdmins
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array of admin accounts (passwords excluded).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Admin'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [admins]
+      summary: Create an admin account
+      description: Requires **owner** role.
+      operationId: createAdmin
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  minLength: 2
+                  maxLength: 50
+                  pattern: '^[a-zA-Z0-9_-]+$'
+                  description: Alphanumeric characters, underscores, and hyphens only.
+                  example: notch
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: supersecret123
+                role:
+                  $ref: '#/components/schemas/Role'
+                  default: staff
+      responses:
+        '201':
+          description: Admin account created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Admin'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Username is already taken.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Username already taken
+
+  /admins/{id}:
+    delete:
+      tags: [admins]
+      summary: Delete an admin account
+      description: |
+        Requires **owner** role.
+
+        **Constraints:**
+        - Cannot delete your own account.
+        - Cannot delete the last admin.
+        - Cannot delete the last owner.
+      operationId: deleteAdmin
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/adminId'
+      responses:
+        '200':
+          description: Admin account deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admins/{id}/role:
+    put:
+      tags: [admins]
+      summary: Change an admin's role
+      description: |
+        Requires **owner** role.
+
+        **Constraints:**
+        - Cannot change your own role.
+        - Cannot demote the last owner.
+      operationId: updateAdminRole
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/adminId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  $ref: '#/components/schemas/Role'
+      responses:
+        '200':
+          description: Role updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Admin'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admins/{id}/password:
+    put:
+      tags: [admins]
+      summary: Change an admin's password
+      description: |
+        Requires **helper** role or higher.
+
+        **Rules:**
+        - Any admin can change their own password by providing `currentPassword`.
+        - An **owner** can change any admin's password without providing `currentPassword`.
+      operationId: updateAdminPassword
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/adminId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                currentPassword:
+                  type: string
+                  format: password
+                  description: Required when changing your own password (non-owner).
+                  example: oldsecret123
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: newsecret456
+      responses:
+        '200':
+          description: Password changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------- Audit ----------------------------------------------------------
+  /audit:
+    get:
+      tags: [audit]
+      summary: List audit log entries
+      description: Requires **staff** role or higher.
+      operationId: listAuditLog
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum number of entries to return.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of entries to skip (for pagination).
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            example: item.update
+          description: |
+            Filter by action name. Available actions:
+            `item.create`, `item.update`, `item.delete`, `item.bulk_import`,
+            `category.create`, `category.update`, `category.delete`,
+            `submission.approve`, `submission.reject`,
+            `admin.create`, `admin.delete`, `admin.role_change`, `admin.password_change`
+      responses:
+        '200':
+          description: Paginated audit log.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, total, limit, offset]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+                  total:
+                    type: integer
+                    description: Total number of entries matching the filter.
+                    example: 234
+                  limit:
+                    type: integer
+                    example: 50
+                  offset:
+                    type: integer
+                    example: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
